@@ -25,10 +25,10 @@ use storage::{
 };
 use types::{
     DataKey, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_PENDING_NONCE,
-    ERR_CONTRACT_PAUSED, ERR_EMPTY_PARAMS, ERR_NOT_ADMIN, ERR_NOT_EMPLOYEE, ERR_NOT_EMPLOYER,
-    ERR_NOT_PENDING_ADMIN, ERR_NO_PENDING_ADMIN, ERR_OVERFLOW, ERR_REENTRANT,
-    ERR_STREAM_ALREADY_ENDED, ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED, ERR_STREAM_NOT_ACTIVE,
-    ERR_STREAM_NOT_FOUND, ERR_STREAM_NOT_PAUSED, ERR_ZERO_DEPOSIT,
+    ERR_CONTRACT_HARD_PAUSED, ERR_CONTRACT_PAUSED, ERR_EMPTY_PARAMS, ERR_NOT_ADMIN,
+    ERR_NOT_EMPLOYEE, ERR_NOT_EMPLOYER, ERR_NOT_PENDING_ADMIN, ERR_NO_PENDING_ADMIN, ERR_OVERFLOW,
+    ERR_REENTRANT, ERR_STREAM_ALREADY_ENDED, ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED,
+    ERR_STREAM_NOT_ACTIVE, ERR_STREAM_NOT_FOUND, ERR_STREAM_NOT_PAUSED, ERR_ZERO_DEPOSIT,
 };
 use validate::{validate_create_stream, validate_rate, validate_top_up};
 
@@ -41,6 +41,19 @@ fn get_paused(env: &Env) -> bool {
 
 fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+fn get_hard_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::HardPaused)
+        .unwrap_or(false)
+}
+
+fn set_hard_paused(env: &Env, hard_paused: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::HardPaused, &hard_paused);
 }
 
 #[contract]
@@ -152,6 +165,55 @@ impl StreamContract {
         events::contract_paused(&env, false);
     }
 
+    /// Admin hard-pauses the contract, blocking ALL token-moving operations.
+    ///
+    /// Unlike `pause_contract` (which only blocks `create_stream` and
+    /// `withdraw`), hard-pause also blocks `top_up`, `cancel_stream`,
+    /// `cancel_streams_batch`, `withdraw_all`, and `create_streams_batch`.
+    /// Read-only functions (`get_stream`, `claimable`, `stream_status`, etc.)
+    /// remain available in all pause states.
+    ///
+    /// Use this for emergency situations where all token movement must be
+    /// frozen until the issue is resolved.
+    ///
+    /// # Parameters
+    /// - `nonce` — current admin nonce; must match the stored value (replay protection)
+    ///
+    /// # Errors
+    /// - Panics if admin auth fails
+    /// - E009 if `nonce` does not match the stored nonce
+    pub fn hard_pause_contract(env: Env, nonce: u64) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        consume_admin_nonce(&env, nonce);
+        set_hard_paused(&env, true);
+        events::contract_hard_paused(&env, true);
+    }
+
+    /// Admin lifts the hard-pause, restoring full contract operation.
+    ///
+    /// # Parameters
+    /// - `nonce` — current admin nonce; must match the stored value (replay protection)
+    ///
+    /// # Errors
+    /// - Panics if admin auth fails
+    /// - E009 if `nonce` does not match the stored nonce
+    pub fn hard_unpause_contract(env: Env, nonce: u64) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        consume_admin_nonce(&env, nonce);
+        set_hard_paused(&env, false);
+        events::contract_hard_paused(&env, false);
+    }
+
+    /// Return whether the contract is currently hard-paused.
+    ///
+    /// # Returns
+    /// `true` if the contract is hard-paused, `false` otherwise.
+    pub fn is_hard_paused(env: Env) -> bool {
+        get_hard_paused(&env)
+    }
+
     /// Set the minimum deposit enforced on `create_stream`.
     ///
     /// Streams created after this call must have `deposit >= amount`.
@@ -211,6 +273,7 @@ impl StreamContract {
     ) -> u64 {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
 
         let now = env.ledger().timestamp();
         let min_deposit = get_min_deposit(&env);
@@ -274,6 +337,7 @@ impl StreamContract {
     ) -> Vec<u64> {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
         assert!(!params.is_empty(), "{}", ERR_EMPTY_PARAMS);
 
         let now = env.ledger().timestamp();
@@ -344,6 +408,7 @@ impl StreamContract {
     pub fn withdraw(env: Env, employee: Address, stream_id: u64) -> i128 {
         employee.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
         let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         assert_eq!(stream.employee, employee, "{}", ERR_NOT_EMPLOYEE);
         assert!(
@@ -413,6 +478,7 @@ impl StreamContract {
     pub fn withdraw_all(env: Env, employee: Address) -> Vec<(u64, i128)> {
         employee.require_auth();
         assert!(!get_paused(&env), "contract is paused");
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
 
         let stream_ids = get_employee_streams(&env, &employee);
         let mut results: Vec<(u64, i128)> = Vec::new(&env);
@@ -484,6 +550,7 @@ impl StreamContract {
     /// - Panics if the token transfer fails
     pub fn top_up(env: Env, employer: Address, stream_id: u64, amount: i128) {
         employer.require_auth();
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
         validate_top_up(amount);
         let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
@@ -613,6 +680,7 @@ impl StreamContract {
     /// - Panics if stream is already Cancelled or Exhausted
     pub fn cancel_stream(env: Env, employer: Address, stream_id: u64) {
         employer.require_auth();
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
         let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
         assert!(
@@ -675,6 +743,7 @@ impl StreamContract {
     /// - Panics if any stream is already Cancelled or Exhausted
     pub fn cancel_streams_batch(env: Env, employer: Address, stream_ids: Vec<u64>) {
         employer.require_auth();
+        assert!(!get_hard_paused(&env), "{}", ERR_CONTRACT_HARD_PAUSED);
         assert!(!stream_ids.is_empty(), "stream_ids must not be empty");
 
         let now = env.ledger().timestamp();

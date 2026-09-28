@@ -76,6 +76,12 @@ pub enum DataKey {
     /// Set by propose_emergency_drain; cleared by emergency_drain after execution.
     /// See SEC-03 / issue #32.
     PendingDrain,
+    /// Hard-pause flag: when set to `true` every token-moving function
+    /// (top_up, cancel_stream, cancel_streams_batch, withdraw, withdraw_all,
+    /// create_stream, create_streams_batch) is blocked.  Read-only functions
+    /// (get_stream, claimable, stream_status, …) remain available.
+    /// See SC-12.
+    HardPaused,
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -134,3 +140,5 @@ pub const ERR_BAD_PENDING_NONCE: &str = "E024: invalid pending admin nonce";
 pub const ERR_DRAIN_NOT_PAUSED: &str = "E026: contract must be paused before emergency drain";
 /// E027: no pending emergency drain proposal exists (SEC-03 / #32).
 pub const ERR_NO_PENDING_DRAIN: &str = "E027: no pending emergency drain proposal";
+/// E028: contract is hard-paused; all token-moving operations are blocked (SC-12).
+pub const ERR_CONTRACT_HARD_PAUSED: &str = "E028: contract is hard-paused";

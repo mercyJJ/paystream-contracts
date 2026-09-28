@@ -1787,3 +1787,116 @@ fn test_resume_stream_resets_last_withdraw_time() {
         "claimable must be 0 immediately after resume (no elapsed time)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SC-12 – Hard pause blocks all token-moving operations
+// ---------------------------------------------------------------------------
+
+/// hard_pause_contract + hard_unpause_contract toggle is_hard_paused.
+#[test]
+fn test_hard_pause_unpause_toggles_flag() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert!(!client.is_hard_paused());
+
+    client.hard_pause_contract(&0);
+    assert!(client.is_hard_paused());
+
+    client.hard_unpause_contract(&1);
+    assert!(!client.is_hard_paused());
+}
+
+/// create_stream is blocked when hard-paused.
+#[test]
+#[should_panic(expected = "E028")]
+fn test_hard_pause_blocks_create_stream() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.hard_pause_contract(&0);
+
+    client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+}
+
+/// top_up is blocked when hard-paused.
+#[test]
+#[should_panic(expected = "E028")]
+fn test_hard_pause_blocks_top_up() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+
+    client.hard_pause_contract(&0);
+    client.top_up(&employer, &id, &1000);
+}
+
+/// cancel_stream is blocked when hard-paused.
+#[test]
+#[should_panic(expected = "E028")]
+fn test_hard_pause_blocks_cancel_stream() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+
+    client.hard_pause_contract(&0);
+    client.cancel_stream(&employer, &id);
+}
+
+/// withdraw is blocked when hard-paused.
+#[test]
+#[should_panic(expected = "E028")]
+fn test_hard_pause_blocks_withdraw() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.hard_pause_contract(&0);
+    client.withdraw(&employee, &id);
+}
+
+/// get_stream (read-only) is still available when hard-paused.
+#[test]
+fn test_hard_pause_reads_still_work() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.hard_pause_contract(&0);
+
+    // These should NOT panic
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Active);
+
+    let claimable = client.claimable(&id);
+    assert_eq!(claimable, 1000); // 100s * 10/s
+
+    assert_eq!(client.stream_status(&id), StreamStatus::Active);
+}

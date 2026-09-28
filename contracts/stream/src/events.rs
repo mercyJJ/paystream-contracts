@@ -45,6 +45,11 @@ pub fn contract_paused(env: &Env, paused: bool) {
     env.events().publish((symbol_short!("paused"),), paused);
 }
 
+pub fn contract_hard_paused(env: &Env, hard_paused: bool) {
+    env.events()
+        .publish((symbol_short!("hpaused"),), hard_paused);
+}
+
 /// Emitted when `update_rate` changes the stream's `rate_per_second`.
 pub fn rate_updated(env: &Env, stream_id: u64, old_rate: i128, new_rate: i128) {
     env.events().publish(
